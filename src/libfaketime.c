@@ -340,6 +340,9 @@ static int outfile = -1;
 
 static bool limited_faking = false;
 static long callcounter = 0;
+
+static long long ft_keep_before_nsec_since_epoch = -1;
+
 static long ft_start_after_secs = -1;
 static long ft_stop_after_secs = -1;
 static long ft_start_after_ncalls = -1;
@@ -2897,6 +2900,11 @@ static void ftpl_really_init(void)
     }
   }
 
+  if ((tmp_env = getenv("FAKETIME_KEEP_BEFORE_NSEC_SINCE_EPOCH")) != NULL)
+  {
+    ft_keep_before_nsec_since_epoch = atoll(tmp_env);
+    limited_faking = true;
+  }
   if ((tmp_env = getenv("FAKETIME_START_AFTER_SECONDS")) != NULL)
   {
     ft_start_after_secs = atol(tmp_env);
@@ -3220,9 +3228,17 @@ int fake_clock_gettime(clockid_t clk_id, struct timespec *tp)
         timespecsub(tp, &ftpl_starttime.real, &tmp_ts);
         break;
     }
-
     if (limited_faking)
     {
+      if (ft_keep_before_nsec_since_epoch != -1)
+      {
+        long long tp_nsec = ((long long)tp->tv_sec) * 1000000000 + ((long long)tp->tv_nsec);
+        if (tp_nsec < ft_keep_before_nsec_since_epoch)
+        {
+          ret = 0;
+          goto abort;
+        }
+      }
       /* Check whether we actually should be faking the returned timestamp. */
       /* fprintf(stderr, "(libfaketime limits -> runtime: %lu, callcounter: %lu\n", (*time_tptr - ftpl_starttime), callcounter); */
       if (((ft_start_after_secs != -1)    && (tmp_ts.tv_sec < ft_start_after_secs))
