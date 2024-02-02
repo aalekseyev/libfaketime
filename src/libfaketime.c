@@ -1220,6 +1220,18 @@ int utimes(const char *filename, const struct timeval times[2])
     user_offset2.tv_usec = user_offset.tv_nsec / 1000;
     timersub(&times[0], &user_offset2, &tn[0]);
     timersub(&times[1], &user_offset2, &tn[1]);
+    long long tn0_nsec = ((long long) tn[0].tv_sec) * 1000000000 + ((long long) tn[0].tv_usec) * 1000;
+    long long tn1_nsec = ((long long) tn[1].tv_sec) * 1000000000 + ((long long) tn[1].tv_usec) * 1000;
+    if (ft_keep_before_nsec_since_epoch != -1 &&
+        tn0_nsec >= ft_keep_before_nsec_since_epoch)
+    {
+      tn[0] = times[0];
+    }
+    if (ft_keep_before_nsec_since_epoch != -1 &&
+        tn1_nsec >= ft_keep_before_nsec_since_epoch)
+    {
+      tn[1] = times[1];
+    }
     times = tn;
   }
 #ifdef MACOS_DYLD_INTERPOSE
