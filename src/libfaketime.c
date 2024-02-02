@@ -1183,6 +1183,20 @@ int utime(const char *filename, const struct utimbuf *times)
   {
     ntbuf.actime = times->actime - user_offset.tv_sec;
     ntbuf.modtime = times->modtime - user_offset.tv_sec;
+
+    long long ac_nsec = ((long long)ntbuf.actime) * 1000000000;
+    long long mod_nsec = ((long long)ntbuf.modtime) * 1000000000;
+    if (ft_keep_before_nsec_since_epoch != -1 &&
+        ac_nsec >= ft_keep_before_nsec_since_epoch)
+    {
+      ntbuf.actime = times->actime;
+    }
+    if (ft_keep_before_nsec_since_epoch != -1 &&
+        mod_nsec >= ft_keep_before_nsec_since_epoch)
+    {
+      ntbuf.modtime = times->modtime;
+    }
+
     times = &ntbuf;
   }
 #ifdef MACOS_DYLD_INTERPOSE
