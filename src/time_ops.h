@@ -25,6 +25,9 @@
 #define SEC_TO_uSEC 1000000
 #define SEC_TO_nSEC 1000000000
 
+#define NSEC_FROM_uSEC 1000
+#define NSEC_FROM_nSEC 1
+
 /* Convenience macros for operations on timevals.
    NOTE: `timercmp' does not work for >= or <=.  */
 #define timerisset2(tvp, prefix) ((tvp)->tv_sec || (tvp)->tv_##prefix##sec)
@@ -45,6 +48,9 @@
         (result)->tv_##prefix##sec -= SEC_TO_##prefix##SEC;         \
       }                                                             \
   } while (0)
+#define timernsec(a, prefix)                                        \
+    (((long long)(a)->tv_sec) * 1000000000 +                        \
+      (a)->tv_##prefix##sec * NSEC_FROM_##prefix##SEC)
 #define timersub2(a, b, result, prefix)                             \
   do                                                                \
   {                                                                 \
