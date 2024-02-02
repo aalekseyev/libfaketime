@@ -1187,12 +1187,12 @@ int utime(const char *filename, const struct utimbuf *times)
     long long ac_nsec = ((long long)ntbuf.actime) * 1000000000;
     long long mod_nsec = ((long long)ntbuf.modtime) * 1000000000;
     if (ft_keep_before_nsec_since_epoch != -1 &&
-        ac_nsec >= ft_keep_before_nsec_since_epoch)
+        ac_nsec < ft_keep_before_nsec_since_epoch)
     {
       ntbuf.actime = times->actime;
     }
     if (ft_keep_before_nsec_since_epoch != -1 &&
-        mod_nsec >= ft_keep_before_nsec_since_epoch)
+        mod_nsec < ft_keep_before_nsec_since_epoch)
     {
       ntbuf.modtime = times->modtime;
     }
@@ -1237,12 +1237,12 @@ int utimes(const char *filename, const struct timeval times[2])
     long long tn0_nsec = timernsec(&tn[0], u);
     long long tn1_nsec = timernsec(&tn[1], u);
     if (ft_keep_before_nsec_since_epoch != -1 &&
-        tn0_nsec >= ft_keep_before_nsec_since_epoch)
+        tn0_nsec < ft_keep_before_nsec_since_epoch)
     {
       tn[0] = times[0];
     }
     if (ft_keep_before_nsec_since_epoch != -1 &&
-        tn1_nsec >= ft_keep_before_nsec_since_epoch)
+        tn1_nsec < ft_keep_before_nsec_since_epoch)
     {
       tn[1] = times[1];
     }
@@ -1292,7 +1292,7 @@ static void fake_two_timespec(const struct timespec in_times[2], struct timespec
       timersub2(&in_times[j], &user_offset, &out_times[j], n);
       long long out_nsec = timernsec(&out_times[j], n);
       if (ft_keep_before_nsec_since_epoch != -1 &&
-        out_nsec >= ft_keep_before_nsec_since_epoch)
+          out_nsec < ft_keep_before_nsec_since_epoch)
       {
         out_times[j] = in_times[j];
       }
