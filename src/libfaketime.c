@@ -341,7 +341,9 @@ static int outfile = -1;
 static bool limited_faking = false;
 static long callcounter = 0;
 
-static long long ft_keep_before_nsec_since_epoch = -1;
+static bool ft_taper = 0;
+static long long ft_taper_begin_nsec_since_epoch = -1;
+static long long ft_taper_end_nsec_since_epoch = -1;
 
 static long ft_start_after_secs = -1;
 static long ft_stop_after_secs = -1;
@@ -1159,6 +1161,133 @@ int statx(int dirfd, const char *pathname, int flags, unsigned int mask, struct 
 }
 #endif
 
+static long long faketime_offset() {
+  return ((long long)user_offset.tv_sec) * 1000000000 + (long long)user_offset.tv_nsec;
+}
+
+// (a * b + c) / d, but do something to avoid multiplication overflow
+// (only "mostly" prevents overflow, not if the values are already
+// over 2^62)
+//
+// precondition: a < d, r < d (b is not constrained)
+static long long mad_div_avoid_overflow_inner(long long a, long long b, long long c, long long d)
+{
+  if (a <= 1 || b <= 1) {
+    return (a * b + c) / d;
+  }
+  // how many multiples of [a] we need to make a full [d]
+  long long k = (d + a - 1) / a; // 2 <= k <= d/2+1
+  long long rem_per_f = a * k - d;
+  // how many occurrences of [a*k] (and therefore [d]) we can
+  // easily take from [a*b]
+  long long f = b / k;
+  // remaining: rem_per_f * f + (b % k) * a + c
+  long long rem = (b % k) * a + c;
+  long long res = f + rem / d;
+  rem = rem % d;
+  return res + mad_div_avoid_overflow_inner(rem_per_f, f, rem, d);
+}
+
+static long long mult_div_avoid_overflow(long long a, long long b, long long d)
+{
+  long long res = a / d;
+  return res + mad_div_avoid_overflow_inner(a%d, b, 0, d);
+}
+
+static long long faketime_do_tapered_offset(long long t) {
+  if (!ft_taper) {
+      return t + faketime_offset();
+  }
+  if (t <= ft_taper_begin_nsec_since_epoch) {
+    return t;
+  }
+  if (t >= ft_taper_end_nsec_since_epoch) {
+    return t + faketime_offset();
+  }
+  long long taper_range = ft_taper_end_nsec_since_epoch - ft_taper_begin_nsec_since_epoch;
+  long long offset_range = faketime_offset() + taper_range;
+  // [offset_range] virtual time passes over [taper_range] real time
+  long long dt = t - ft_taper_begin_nsec_since_epoch;
+  // so we're looking for dt * offset_range / taper_range, doing
+  long long dvt = mult_div_avoid_overflow(dt, offset_range, taper_range);
+  // something complicated to avoid overflow.
+  long long res = ft_taper_begin_nsec_since_epoch + dvt;
+  return res;
+}
+
+static long long faketime_undo_tapered_offset(long long t) {
+  if (!ft_taper) {
+      return t - faketime_offset();
+  }
+  long long ft_reverse_taper_begin_nsec_since_epoch = ft_taper_begin_nsec_since_epoch;
+  long long ft_reverse_taper_end_nsec_since_epoch = ft_taper_end_nsec_since_epoch + faketime_offset();
+  if (t <= ft_reverse_taper_begin_nsec_since_epoch) {
+    return t;
+  }
+  if (t >= ft_reverse_taper_end_nsec_since_epoch) {
+    return t - faketime_offset();
+  }
+  long long taper_range = ft_reverse_taper_end_nsec_since_epoch - ft_reverse_taper_begin_nsec_since_epoch;
+  long long offset_range = taper_range - faketime_offset();
+  // [offset_range] virtual time passes over [taper_range] real time
+  long long dt = t - ft_reverse_taper_begin_nsec_since_epoch;
+  // so we're looking for dt * offset_range / taper_range, doing
+  long long dvt = mult_div_avoid_overflow(dt, offset_range, taper_range);
+  // something complicated to avoid overflow.
+  long long res = ft_reverse_taper_begin_nsec_since_epoch + dvt;
+  return res;
+}
+
+void faketime_div_mod(long long ns, long long d, long long *res, long long *rem) {
+  *res = ns / d;
+  *rem = ns % d;
+  if(*rem < 0) {
+    (*rem) += d;
+    (*res)--;
+  }
+}
+
+struct timeval faketime_undo_tapered_offset_timeval(struct timeval t) {
+  long long nsec = ((long long)t.tv_sec) * 1000000000 + ((long long)t.tv_usec) * 1000;
+  nsec = faketime_undo_tapered_offset(nsec);
+  long long sec;
+  long long nsec_rem;
+  faketime_div_mod(nsec, 1000000000, &sec, &nsec_rem);
+  t.tv_sec = sec;
+  t.tv_usec = nsec_rem / 1000;
+  return t;
+}
+
+struct timespec faketime_undo_tapered_offset_timespec(struct timespec t) {
+  long long nsec = ((long long)t.tv_sec) * 1000000000 + ((long long)t.tv_nsec);
+  nsec = faketime_undo_tapered_offset(nsec);
+  long long sec;
+  long long nsec_rem;
+  faketime_div_mod(nsec, 1000000000, &sec, &nsec_rem);
+  t.tv_sec = sec;
+  t.tv_nsec = nsec_rem;
+  return t;
+}
+
+
+struct timespec faketime_do_tapered_offset_timespec(struct timespec t) {
+  long long nsec = ((long long)t.tv_sec) * 1000000000 + ((long long)t.tv_nsec);
+  nsec = faketime_do_tapered_offset(nsec);
+  long long sec;
+  long long nsec_rem;
+  faketime_div_mod(nsec, 1000000000, &sec, &nsec_rem);
+  t.tv_sec = sec;
+  t.tv_nsec = nsec_rem;
+  return t;
+}
+
+
+int faketime_undo_tapered_offset_sec(int t) {
+  long long nsec = ((long long)t) * 1000000000;
+  nsec = faketime_undo_tapered_offset(nsec);
+  return nsec / 1000000000;
+}
+
 #ifdef FAKE_FILE_TIMESTAMPS
 #ifdef MACOS_DYLD_INTERPOSE
 int macos_utime(const char *filename, const struct utimbuf *times)
@@ -1184,17 +1313,9 @@ int utime(const char *filename, const struct utimbuf *times)
     ntbuf.actime = times->actime - user_offset.tv_sec;
     ntbuf.modtime = times->modtime - user_offset.tv_sec;
 
-    long long ac_nsec = ((long long)ntbuf.actime) * 1000000000;
-    long long mod_nsec = ((long long)ntbuf.modtime) * 1000000000;
-    if (ft_keep_before_nsec_since_epoch != -1 &&
-        ac_nsec < ft_keep_before_nsec_since_epoch)
-    {
-      ntbuf.actime = times->actime;
-    }
-    if (ft_keep_before_nsec_since_epoch != -1 &&
-        mod_nsec < ft_keep_before_nsec_since_epoch)
-    {
-      ntbuf.modtime = times->modtime;
+    if (ft_taper) {
+      ntbuf.actime = faketime_undo_tapered_offset_sec(times->actime);
+      ntbuf.modtime = faketime_undo_tapered_offset_sec(times->modtime);
     }
 
     times = &ntbuf;
@@ -1234,17 +1355,9 @@ int utimes(const char *filename, const struct timeval times[2])
     user_offset2.tv_usec = user_offset.tv_nsec / 1000;
     timersub(&times[0], &user_offset2, &tn[0]);
     timersub(&times[1], &user_offset2, &tn[1]);
-    long long tn0_nsec = timernsec(&tn[0], u);
-    long long tn1_nsec = timernsec(&tn[1], u);
-    if (ft_keep_before_nsec_since_epoch != -1 &&
-        tn0_nsec < ft_keep_before_nsec_since_epoch)
-    {
-      tn[0] = times[0];
-    }
-    if (ft_keep_before_nsec_since_epoch != -1 &&
-        tn1_nsec < ft_keep_before_nsec_since_epoch)
-    {
-      tn[1] = times[1];
+    if (ft_taper) {
+      tn[0] = faketime_undo_tapered_offset_timeval(times[0]);
+      tn[1] = faketime_undo_tapered_offset_timeval(times[1]);
     }
     times = tn;
   }
@@ -1290,12 +1403,10 @@ static void fake_two_timespec(const struct timespec in_times[2], struct timespec
     else
     {
       timersub2(&in_times[j], &user_offset, &out_times[j], n);
-      long long out_nsec = timernsec(&out_times[j], n);
-      if (ft_keep_before_nsec_since_epoch != -1 &&
-          out_nsec < ft_keep_before_nsec_since_epoch)
-      {
-        out_times[j] = in_times[j];
+      if (ft_taper) {
+        out_times[j] = faketime_undo_tapered_offset_timespec(in_times[j]);
       }
+
     }
   }
 }
@@ -2932,9 +3043,22 @@ static void ftpl_really_init(void)
     }
   }
 
-  if ((tmp_env = getenv("FAKETIME_KEEP_BEFORE_NSEC_SINCE_EPOCH")) != NULL)
+  if ((tmp_env = getenv("FAKETIME_TAPER_BEGIN_NSEC_SINCE_EPOCH")) != NULL)
   {
-    ft_keep_before_nsec_since_epoch = atoll(tmp_env);
+    ft_taper_begin_nsec_since_epoch = atoll(tmp_env);
+    if(!ft_taper) {
+      ft_taper = true;
+      ft_taper_end_nsec_since_epoch = ft_taper_begin_nsec_since_epoch;
+    }
+    limited_faking = true;
+  }
+  if ((tmp_env = getenv("FAKETIME_TAPER_END_NSEC_SINCE_EPOCH")) != NULL)
+  {
+    ft_taper_end_nsec_since_epoch = atoll(tmp_env);
+    if(!ft_taper) {
+      ft_taper = true;
+      ft_taper_begin_nsec_since_epoch = ft_taper_end_nsec_since_epoch;
+    }
     limited_faking = true;
   }
   if ((tmp_env = getenv("FAKETIME_START_AFTER_SECONDS")) != NULL)
@@ -3262,15 +3386,6 @@ int fake_clock_gettime(clockid_t clk_id, struct timespec *tp)
     }
     if (limited_faking)
     {
-      if (ft_keep_before_nsec_since_epoch != -1)
-      {
-        long long tp_nsec = ((long long)tp->tv_sec) * 1000000000 + ((long long)tp->tv_nsec);
-        if (tp_nsec < ft_keep_before_nsec_since_epoch)
-        {
-          ret = 0;
-          goto abort;
-        }
-      }
       /* Check whether we actually should be faking the returned timestamp. */
       /* fprintf(stderr, "(libfaketime limits -> runtime: %lu, callcounter: %lu\n", (*time_tptr - ftpl_starttime), callcounter); */
       if (((ft_start_after_secs != -1)    && (tmp_ts.tv_sec < ft_start_after_secs))
@@ -3421,7 +3536,13 @@ int fake_clock_gettime(clockid_t clk_id, struct timespec *tp)
         {
           timeadj = tdiff;
         }
-        timespecadd(&user_faked_time_timespec, &timeadj, tp);
+
+        if(ft_taper) {
+          *tp = faketime_do_tapered_offset_timespec(*tp);
+        }
+        else {
+          timespecadd(&user_faked_time_timespec, &timeadj, tp);
+        }
       }
       break;
 
