@@ -1161,7 +1161,8 @@ int statx(int dirfd, const char *pathname, int flags, unsigned int mask, struct 
 }
 #endif
 
-static long long faketime_offset() {
+static long long faketime_offset_ns()
+{
   return ((long long)user_offset.tv_sec) * 1000000000 + (long long)user_offset.tv_nsec;
 }
 
@@ -1169,7 +1170,7 @@ static long long faketime_offset() {
 // (only "mostly" prevents overflow, not if the values are already
 // over 2^62)
 //
-// precondition: a < d, r < d (b is not constrained)
+// precondition: a < d, r < d
 static long long mad_div_avoid_overflow_inner(long long a, long long b, long long c, long long d)
 {
   if (a <= 1 || b <= 1) {
@@ -1194,51 +1195,46 @@ static long long mult_div_avoid_overflow(long long a, long long b, long long d)
   return res + mad_div_avoid_overflow_inner(a%d, b, 0, d);
 }
 
-static long long faketime_do_tapered_offset(long long t) {
-  if (!ft_taper) {
-      return t + faketime_offset();
-  }
-  if (t <= ft_taper_begin_nsec_since_epoch) {
+static long long faketime_do_tapered_transform_gen(long long t, long long taper_begin, long long taper_end, long long offset)
+{
+  if (t <= taper_begin)
+  {
     return t;
   }
-  if (t >= ft_taper_end_nsec_since_epoch) {
-    return t + faketime_offset();
+  if (t >= taper_end)
+  {
+    return t + offset;
   }
-  long long taper_range = ft_taper_end_nsec_since_epoch - ft_taper_begin_nsec_since_epoch;
-  long long offset_range = faketime_offset() + taper_range;
-  // [offset_range] virtual time passes over [taper_range] real time
-  long long dt = t - ft_taper_begin_nsec_since_epoch;
-  // so we're looking for dt * offset_range / taper_range, doing
-  long long dvt = mult_div_avoid_overflow(dt, offset_range, taper_range);
-  // something complicated to avoid overflow.
-  long long res = ft_taper_begin_nsec_since_epoch + dvt;
-  return res;
+  long long w = taper_end - taper_begin;
+  long long h = w + offset;
+  // [h] output time passes over [w] input time
+  long long dt1 = t - taper_begin;
+  // so we're looking for dt1 * h / w
+  long long dt2 = mult_div_avoid_overflow(dt1, h, w);
+  return taper_begin + dt2;
 }
 
-static long long faketime_undo_tapered_offset(long long t) {
-  if (!ft_taper) {
-      return t - faketime_offset();
+static long long faketime_do_tapered_offset(long long t)
+{
+  if (!ft_taper)
+  {
+      return t + faketime_offset_ns();
   }
-  long long ft_reverse_taper_begin_nsec_since_epoch = ft_taper_begin_nsec_since_epoch;
-  long long ft_reverse_taper_end_nsec_since_epoch = ft_taper_end_nsec_since_epoch + faketime_offset();
-  if (t <= ft_reverse_taper_begin_nsec_since_epoch) {
-    return t;
-  }
-  if (t >= ft_reverse_taper_end_nsec_since_epoch) {
-    return t - faketime_offset();
-  }
-  long long taper_range = ft_reverse_taper_end_nsec_since_epoch - ft_reverse_taper_begin_nsec_since_epoch;
-  long long offset_range = taper_range - faketime_offset();
-  // [offset_range] virtual time passes over [taper_range] real time
-  long long dt = t - ft_reverse_taper_begin_nsec_since_epoch;
-  // so we're looking for dt * offset_range / taper_range, doing
-  long long dvt = mult_div_avoid_overflow(dt, offset_range, taper_range);
-  // something complicated to avoid overflow.
-  long long res = ft_reverse_taper_begin_nsec_since_epoch + dvt;
-  return res;
+  return faketime_do_tapered_transform_gen(t, ft_taper_begin_nsec_since_epoch, ft_taper_end_nsec_since_epoch, faketime_offset_ns());
 }
 
-void faketime_div_mod(long long ns, long long d, long long *res, long long *rem) {
+static long long faketime_undo_tapered_offset(long long t)
+{
+  if (!ft_taper)
+  {
+      return t - faketime_offset_ns();
+  }
+  long long offset = faketime_offset_ns();
+  return faketime_do_tapered_transform_gen(t, ft_taper_begin_nsec_since_epoch, ft_taper_end_nsec_since_epoch + offset, -offset);
+}
+
+static void faketime_div_mod(long long ns, long long d, long long *res, long long *rem)
+{
   *res = ns / d;
   *rem = ns % d;
   if(*rem < 0) {
@@ -1247,7 +1243,8 @@ void faketime_div_mod(long long ns, long long d, long long *res, long long *rem)
   }
 }
 
-struct timeval faketime_undo_tapered_offset_timeval(struct timeval t) {
+static struct timeval faketime_undo_tapered_offset_timeval(struct timeval t)
+{
   long long nsec = ((long long)t.tv_sec) * 1000000000 + ((long long)t.tv_usec) * 1000;
   nsec = faketime_undo_tapered_offset(nsec);
   long long sec;
@@ -1258,7 +1255,8 @@ struct timeval faketime_undo_tapered_offset_timeval(struct timeval t) {
   return t;
 }
 
-struct timespec faketime_undo_tapered_offset_timespec(struct timespec t) {
+static struct timespec faketime_undo_tapered_offset_timespec(struct timespec t)
+{
   long long nsec = ((long long)t.tv_sec) * 1000000000 + ((long long)t.tv_nsec);
   nsec = faketime_undo_tapered_offset(nsec);
   long long sec;
@@ -1269,8 +1267,8 @@ struct timespec faketime_undo_tapered_offset_timespec(struct timespec t) {
   return t;
 }
 
-
-struct timespec faketime_do_tapered_offset_timespec(struct timespec t) {
+static struct timespec faketime_do_tapered_offset_timespec(struct timespec t)
+{
   long long nsec = ((long long)t.tv_sec) * 1000000000 + ((long long)t.tv_nsec);
   nsec = faketime_do_tapered_offset(nsec);
   long long sec;
@@ -1281,8 +1279,10 @@ struct timespec faketime_do_tapered_offset_timespec(struct timespec t) {
   return t;
 }
 
-
-int faketime_undo_tapered_offset_sec(int t) {
+// the precision here will be really atrocious,
+// if tapering compresses time significantly
+static int faketime_undo_tapered_offset_sec(int t)
+{
   long long nsec = ((long long)t) * 1000000000;
   nsec = faketime_undo_tapered_offset(nsec);
   return nsec / 1000000000;
@@ -1313,7 +1313,8 @@ int utime(const char *filename, const struct utimbuf *times)
     ntbuf.actime = times->actime - user_offset.tv_sec;
     ntbuf.modtime = times->modtime - user_offset.tv_sec;
 
-    if (ft_taper) {
+    if (ft_taper)
+    {
       ntbuf.actime = faketime_undo_tapered_offset_sec(times->actime);
       ntbuf.modtime = faketime_undo_tapered_offset_sec(times->modtime);
     }
@@ -1355,7 +1356,8 @@ int utimes(const char *filename, const struct timeval times[2])
     user_offset2.tv_usec = user_offset.tv_nsec / 1000;
     timersub(&times[0], &user_offset2, &tn[0]);
     timersub(&times[1], &user_offset2, &tn[1]);
-    if (ft_taper) {
+    if (ft_taper)
+    {
       tn[0] = faketime_undo_tapered_offset_timeval(times[0]);
       tn[1] = faketime_undo_tapered_offset_timeval(times[1]);
     }
@@ -1403,7 +1405,8 @@ static void fake_two_timespec(const struct timespec in_times[2], struct timespec
     else
     {
       timersub2(&in_times[j], &user_offset, &out_times[j], n);
-      if (ft_taper) {
+      if (ft_taper)
+      {
         out_times[j] = faketime_undo_tapered_offset_timespec(in_times[j]);
       }
 
@@ -3046,20 +3049,20 @@ static void ftpl_really_init(void)
   if ((tmp_env = getenv("FAKETIME_TAPER_BEGIN_NSEC_SINCE_EPOCH")) != NULL)
   {
     ft_taper_begin_nsec_since_epoch = atoll(tmp_env);
-    if(!ft_taper) {
+    if(!ft_taper)
+    {
       ft_taper = true;
       ft_taper_end_nsec_since_epoch = ft_taper_begin_nsec_since_epoch;
     }
-    limited_faking = true;
   }
   if ((tmp_env = getenv("FAKETIME_TAPER_END_NSEC_SINCE_EPOCH")) != NULL)
   {
     ft_taper_end_nsec_since_epoch = atoll(tmp_env);
-    if(!ft_taper) {
+    if(!ft_taper)
+    {
       ft_taper = true;
       ft_taper_begin_nsec_since_epoch = ft_taper_end_nsec_since_epoch;
     }
-    limited_faking = true;
   }
   if ((tmp_env = getenv("FAKETIME_START_AFTER_SECONDS")) != NULL)
   {
@@ -3537,10 +3540,17 @@ int fake_clock_gettime(clockid_t clk_id, struct timespec *tp)
           timeadj = tdiff;
         }
 
-        if(ft_taper) {
+        if(ft_taper)
+        {
+          // Tapered offset time transition ignores the speed up/slow
+          // down setting. Someone should figure out how to do speed
+          // up / slow down correctly in that case (ideally, a global
+          // speed-up, as a part of a global time mapping routine, not
+          // relying on a per-process state).
           *tp = faketime_do_tapered_offset_timespec(*tp);
         }
-        else {
+        else
+        {
           timespecadd(&user_faked_time_timespec, &timeadj, tp);
         }
       }
